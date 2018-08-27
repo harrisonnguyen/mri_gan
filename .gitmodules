@@ -1,3 +1,6 @@
 [submodule "16849714rbbzzxsqbphx"]
 	path = 16849714rbbzzxsqbphx
 	url = https://git.overleaf.com/16849714rbbzzxsqbphx
+[submodule "model_utils"]
+	path = model_utils
+	url = https://github.com/harrisonnguyen/model_utils.git
