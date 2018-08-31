@@ -15,50 +15,26 @@ from model import generator, discriminator
 from model_utils import learning_utils as learning
 from model_utils import tfrecord_utils as tfrec
 
-# functions to read images
-from matplotlib.pyplot import imread
-from skimage.transform import resize
-
 import argparse
 
-def load_train_data(image_path, load_size=140, fine_size=128, is_testing=False):
 
-    # load the image
-    img_A = imread(image_path[0])
-    img_B = imread(image_path[1])
+def load_data(serialized_example,feature_list, data_list,feature_size):
+    data = tfrec.tfrecord_parser(serialized_example,feature_list,data_list,feature_size**2)
+    #image = tf.reshape(data[0], [feature_size,feature_size,feature_size])
 
-    if not is_testing:
-        img_A = resize(img_A, [load_size, load_size],preserve_range=True)
-        img_B = resize(img_B, [load_size, load_size],preserve_range=True)
-
-        h1 = int(np.ceil(np.random.uniform(1e-2, load_size-fine_size)))
-        w1 = int(np.ceil(np.random.uniform(1e-2, load_size-fine_size)))
-
-        img_A = img_A[h1:h1+fine_size, w1:w1+fine_size]
-        img_B = img_B[h1:h1+fine_size, w1:w1+fine_size]
-
-
-        if np.random.random() > 0.5:
-            img_A = np.fliplr(img_A)
-            img_B = np.fliplr(img_B)
-    else:
-        img_A = resize(img_A, [fine_size, fine_size],preserve_range=True)
-        img_B = resize(img_B, [fine_size, fine_size],preserve_range=True)
-
-    # scale between -1 and 1
-    img_A = img_A/127.5 - 1.
-    img_B = img_B/127.5 - 1.
-
-    img_AB = np.concatenate((img_A, img_B), axis=2)
-    # img_AB shape: (fine_size, fine_size, input_c_dim + output_c_dim)
-    return img_AB
+    # get a random slice of the 3d image
+    #index = tf.random_uniform((),minval=0,maxval=data[5],dtype=tf.int64)
+    #slice = image[index,:,:]
+    return tf.reshape(data[0],[feature_size,feature_size,1])
 
 def main(parser):
 
     # model paramters
     N_BASE_FILTER = 16
     PATCH_SIZE = 128
-    N_MODALITY = 3
+    N_MODALITY = 1
+    BATCH_SIZE = parser.batch_size
+    N_EPOCHS = parser.n_epoch
 
     x_phA = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
     x_phB = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
@@ -71,7 +47,7 @@ def main(parser):
 
     with tf.variable_scope("A_to_B") as scope:
         predicted_B = generator(x_phA,N_BASE_FILTER,training_ph,
-                                  output_activation=None)
+                                  output_activation=None,n_modality=N_MODALITY)
 
 
     with tf.variable_scope("discrimB") as scope:
@@ -81,7 +57,7 @@ def main(parser):
 
     with tf.variable_scope("B_to_A") as scope:
         predicted_A = generator(x_phB,N_BASE_FILTER,training_ph,
-                                      output_activation=None)
+                                      output_activation=None,n_modality=N_MODALITY)
 
     with tf.variable_scope("discrimA") as scope:
         real_A = discriminator(x_phA,N_BASE_FILTER,training_ph)
@@ -91,12 +67,12 @@ def main(parser):
     with tf.variable_scope("B_to_A") as scope:
         scope.reuse_variables()
         reconstructA = generator(predicted_B,N_BASE_FILTER,training_ph,
-                                       output_activation=None)
+                                       output_activation=None,n_modality=N_MODALITY)
 
     with tf.variable_scope("A_to_B") as scope:
         scope.reuse_variables()
         reconstructB = generator(predicted_A,N_BASE_FILTER,training_ph,
-                                      output_activation=None)
+                                      output_activation=None,n_modality=N_MODALITY)
 
     """
     beginning of loss
@@ -178,16 +154,32 @@ def main(parser):
     BATCH_SIZE = parser.batch_size
 
     """Training data"""
+    ## get the control of WMH
+    wmh_control = tfrec.get_files_in_dir(["data/mri_saggital/WMH/CON/"],".tfrecords")
+    bmc_control = tfrec.get_files_in_dir(["data/mri_saggital/BMC/CON/"],".tfrecords")
+    print(wmh_control)
+    #feature_list =  ['data','scanner','gender','class','age','x_shape','y_shape','z_shape']
+    #data_list = ['float','int','int','int','int','int','int','int']
+    feature_list =  ['data','x_shape','y_shape','z_shape']
+    data_list = ['float','int','int','int']
+    feature_size = PATCH_SIZE
 
+    ## create the tensorflow queue
+    parse_fn = lambda x: load_data(x,feature_list,data_list,feature_size)
+    (A_iterator,A_interator_next,filename_ph,batch_ph) = tfrec.create_tfrecord_queue(parse_fn,n_epochs=N_EPOCHS)
 
+    (B_iterator,B_interator_next,filename_ph,batch_ph) = tfrec.create_tfrecord_queue(parse_fn,None,
+                                        filename_ph,batch_ph)
 
+    # begin session
     config = tf.ConfigProto()
     config.gpu_options.allow_growth=True
     sess = tf.Session(config=config)
     sess.run(tf.global_variables_initializer())
 
+    # ability to save/load models
     saver = tf.train.Saver()
-    base_dir = os.path.join(home,'tensorflow_checkpoints/cycle_mri/'+'_filter'
+    base_dir = os.path.join(home,'tensorflow_checkpoints/cycle_mri/'+'filter'
                             +str(N_BASE_FILTER))
 
 
@@ -207,74 +199,27 @@ def main(parser):
     """
     Training begins
     """
-
-    ## split the training data to match/unmatched data
-    training_files_A = np.sort(training_files_A)
-    training_files_B = np.sort(training_files_B)
-
-    from sklearn.model_selection import train_test_split
-    A_unpair,A_pair,B_unpair,B_pair = train_test_split(training_files_A,training_files_B,
-                                                        random_state=42,test_size=PER_SPLIT,shuffle=True)
-    print(A_pair[:10])
-    print(B_pair[:10])
-    # indexs for paired images
-
-    batch_idxs = min(len(A_unpair), len(B_unpair)) // BATCH_SIZE
-
-    # organise the test dataset
-
-
-
-    for epoch in range(N_EPOCHS):
-        print("At epoch %d" %epoch)
-        np.random.shuffle(A_unpair)
-        np.random.shuffle(B_unpair)
-        #np.random.shuffle(s)
-        for idx in range(0, batch_idxs):
-            batch_files = list(zip(A_unpair[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE],
-                                   B_unpair[idx * BATCH_SIZE:(idx + 1) * BATCH_SIZE]))
-            unpair_batch_images = [load_train_data(batch_file) for batch_file in batch_files]
-            unpair_batch_images = np.array(unpair_batch_images).astype(np.float32)
-
-            index = np.random.randint(0,len(A_pair),BATCH_SIZE)
-            batch_files = list(zip(np.array(A_pair)[index],np.array(B_pair)[index]))
-            pair_batch_images = [load_train_data(batch_file) for batch_file in batch_files]
-            pair_batch_images = np.array(pair_batch_images).astype(np.float32)
-            if USE_SEMI:
-
-                data={x_phA: unpair_batch_images[:,:,:,:3],
-                      x_phB: unpair_batch_images[:,:,:,3:],
-                      x_phA_paired: pair_batch_images[:,:,:,:3],
-                      x_phB_paired: pair_batch_images[:,:,:,3:],
-                     training_ph:True,
-                      decay_step_ph:1000000}
-                summary,_,_,global_step = sess.run([summary_op,solver,discrim_pair_solver,genA_global_step],
-                        feed_dict=data)
-            else:
-                # normal cyclegan but with paired images
-                data={x_phA: unpair_batch_images[:,:,:,:3],
-                      x_phB: unpair_batch_images[:,:,:,3:],
-                     training_ph:True,
-                      decay_step_ph:1000000}
-                summary,_,global_step = sess.run([summary_op,solver,genA_global_step],
-                        feed_dict=data)
-
-                data={x_phA: pair_batch_images[:,:,:,:3],
-                      x_phB: pair_batch_images[:,:,:,3:],
-                     training_ph:True,
-                      decay_step_ph:1000000}
-                summary,_,global_step = sess.run([summary_op,solver,genA_global_step],
-                        feed_dict=data)
+    sess.run(A_iterator.initializer,feed_dict={filename_ph:wmh_control,
+                                        batch_ph:BATCH_SIZE})
+    sess.run(B_iterator.initializer,feed_dict={filename_ph:bmc_control,
+                                        batch_ph:BATCH_SIZE})
+    print("Begin Training")
+    while True:
+        try:
+            A_image = sess.run(A_interator_next)
+            B_image = sess.run(B_interator_next)
+            # normal cyclegan but with paired images
+            data={x_phA: A_image,
+                  x_phB: B_image,
+                 training_ph:True,
+                  decay_step_ph:1000000}
+            summary,_,global_step = sess.run([summary_op,solver,genA_global_step],
+                    feed_dict=data)
 
             if global_step % 100 == 0:
+                print("At train step %d" %global_step
                 train_writer.add_summary(summary, global_step)
-
-                # load the test data
-                index = np.random.randint(0,len(test_files_A),50)
-                batch_files = list(zip(np.array(test_files_A)[index],np.array(test_files_B)[index]))
-                test_batch_images = [load_train_data(batch_file) for batch_file in batch_files]
-                test_batch_images = np.array(pair_batch_images).astype(np.float32)
-
+                """
                 ## run the testing results
                 data={x_phA: test_batch_images[:,:,:,:3],
                       x_phB: test_batch_images[:,:,:,3:],
@@ -282,13 +227,24 @@ def main(parser):
                 summary,global_step = sess.run([validation_summary,genA_global_step],
                         feed_dict=data)
                 validation_writer.add_summary(summary, global_step)
-            checkpoint_name = os.path.join(checkpoint_dir+'/checkpoint/', 'model_step'+str(int(global_step))+'.ckpt')
-            save_path = saver.save(sess, checkpoint_name)
+                """
+            if global_step % 1000 == 0:
+                checkpoint_name = os.path.join(checkpoint_dir+'/checkpoint/', 'model_step'+str(int(global_step))+'.ckpt')
+                save_path = saver.save(sess, checkpoint_name)
+
+        except tf.errors.OutOfRangeError:
+            # we've run out of data
+            break
+    print("Finished training. Computing final erros and saving model.")
+    # perform end of epoch calculations
+    checkpoint_name = os.path.join(checkpoint_dir+'/checkpoint/', 'model_step'+str(int(global_step))+'.ckpt')
+    save_path = saver.save(sess, checkpoint_name)
+
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='cycle gan for mri volumes')
-    parser.add_argument("--n_epoch", type=int, default=10, help='int number of epochs to train')
-    parser.add_argument("--batch_size", type=int, default=1, help='int number of epochs to train')
+    parser.add_argument("--n_epoch", type=int, default=100, help='int number of epochs to train')
+    parser.add_argument("--batch_size", type=int, default=1, help='batch size per training step')
     args = parser.parse_args()
     main(args)

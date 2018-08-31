@@ -5,7 +5,7 @@ sys.path.append( path.dirname( path.dirname( path.abspath(__file__) ) ) )
 import tensorflow as tf
 from model_utils import layer_utils as layers
 
-def generator(x,base_filter,training_ph,output_activation):
+def generator(x,base_filter,training_ph,output_activation,n_modality):
     with tf.variable_scope("conv1") as scope:
         output = layers.conv_layer(x,base_filter,[7,7],1,
                             tf.nn.relu, training_ph,'instance')
@@ -33,7 +33,7 @@ def generator(x,base_filter,training_ph,output_activation):
                             tf.nn.relu, training_ph,'instance')
 
     with tf.variable_scope("final") as scope:
-        output = layers.conv_layer(output,3,[7,7],1,
+        output = layers.conv_layer(output,n_modality,[7,7],1,
                             output_activation, training_ph,None)
     return output
 
