@@ -5,7 +5,7 @@ sys.path.append( path.dirname( path.dirname( path.abspath(__file__) ) ) )
 import tensorflow as tf
 from model_utils import layer_utils as layers
 
-def generator(x,base_filter,training_ph,output_activation,n_modality):
+def generator(x,base_filter,training_ph,output_activation,n_modality,n_residuals=3):
     with tf.variable_scope("conv1") as scope:
         output = layers.conv_layer(x,base_filter,[7,7],1,
                             tf.nn.relu, training_ph,'instance')
@@ -19,7 +19,7 @@ def generator(x,base_filter,training_ph,output_activation,n_modality):
                             tf.nn.relu, training_ph,'instance')
 
     # residual blocks
-    for i in range(3):
+    for i in range(n_residuals):
         with tf.variable_scope("residual"+str(i)):
             output = layers.residual_block(output, base_filter*4,training_ph)
     #upsample
