@@ -32,55 +32,91 @@ def load_data(serialized_example,feature_list, data_list,feature_size):
 def main(parser):
 
     # model paramters
-    N_BASE_FILTER = 4
+    N_BASE_FILTER = parser.n_filter
+    N_RESIDUAL_BLOCKS = parser.n_residuals_blocks
     PATCH_SIZE = 128
     N_MODALITY = 1
     BATCH_SIZE = parser.batch_size
     N_EPOCHS = parser.n_epoch
     CHECKPOINT_NAME = parser.checkpoint_name
     DATA_DIR = parser.data_dir
-
-    x_phA = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
-    x_phB = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
-
-
+    USE_3D = parser.use_3D
 
     training_ph = tf.placeholder_with_default(False,())
     learning_rate_ph = tf.placeholder_with_default(2e-4,())
     decay_step_ph = tf.placeholder(tf.int32,())
+    if USE_3D:
+        x_phA = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
+        x_phB = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
 
-    with tf.variable_scope("A_to_B") as scope:
-        predicted_B = generator3D(x_phA,N_BASE_FILTER,training_ph,
-                                  output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                  n_residuals=1)
-
-
-    with tf.variable_scope("discrimB") as scope:
-        real_B = discriminator3D(x_phB,N_BASE_FILTER,training_ph)
-        scope.reuse_variables()
-        fake_B = discriminator3D(predicted_B,N_BASE_FILTER,training_ph)
-
-    with tf.variable_scope("B_to_A") as scope:
-        predicted_A = generator3D(x_phB,N_BASE_FILTER,training_ph,
+        with tf.variable_scope("A_to_B") as scope:
+            predicted_B = generator3D(x_phA,N_BASE_FILTER,training_ph,
                                       output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                      n_residuals=1)
+                                      n_residuals=N_RESIDUAL_BLOCKS)
 
-    with tf.variable_scope("discrimA") as scope:
-        real_A = discriminator3D(x_phA,N_BASE_FILTER,training_ph)
-        scope.reuse_variables()
-        fake_A = discriminator3D(predicted_A,N_BASE_FILTER,training_ph)
 
-    with tf.variable_scope("B_to_A") as scope:
-        scope.reuse_variables()
-        reconstructA = generator3D(predicted_B,N_BASE_FILTER,training_ph,
-                                       output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                       n_residuals=1)
+        with tf.variable_scope("discrimB") as scope:
+            real_B = discriminator3D(x_phB,N_BASE_FILTER,training_ph)
+            scope.reuse_variables()
+            fake_B = discriminator3D(predicted_B,N_BASE_FILTER,training_ph)
 
-    with tf.variable_scope("A_to_B") as scope:
-        scope.reuse_variables()
-        reconstructB = generator3D(predicted_A,N_BASE_FILTER,training_ph,
+        with tf.variable_scope("B_to_A") as scope:
+            predicted_A = generator3D(x_phB,N_BASE_FILTER,training_ph,
+                                          output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                          n_residuals=N_RESIDUAL_BLOCKS)
+
+        with tf.variable_scope("discrimA") as scope:
+            real_A = discriminator3D(x_phA,N_BASE_FILTER,training_ph)
+            scope.reuse_variables()
+            fake_A = discriminator3D(predicted_A,N_BASE_FILTER,training_ph)
+
+        with tf.variable_scope("B_to_A") as scope:
+            scope.reuse_variables()
+            reconstructA = generator3D(predicted_B,N_BASE_FILTER,training_ph,
+                                           output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                           n_residuals=N_RESIDUAL_BLOCKS)
+
+        with tf.variable_scope("A_to_B") as scope:
+            scope.reuse_variables()
+            reconstructB = generator3D(predicted_A,N_BASE_FILTER,training_ph,
+                                          output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                          n_residuals=N_RESIDUAL_BLOCKS)
+    else:
+        x_phA = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
+        x_phB = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
+
+        with tf.variable_scope("A_to_B") as scope:
+            predicted_B = generator(x_phA,N_BASE_FILTER,training_ph,
                                       output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                      n_residuals=1)
+                                      n_residuals=N_RESIDUAL_BLOCKS)
+
+
+        with tf.variable_scope("discrimB") as scope:
+            real_B = discriminator(x_phB,N_BASE_FILTER,training_ph)
+            scope.reuse_variables()
+            fake_B = discriminator(predicted_B,N_BASE_FILTER,training_ph)
+
+        with tf.variable_scope("B_to_A") as scope:
+            predicted_A = generator(x_phB,N_BASE_FILTER,training_ph,
+                                          output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                          n_residuals=N_RESIDUAL_BLOCKS)
+
+        with tf.variable_scope("discrimA") as scope:
+            real_A = discriminator(x_phA,N_BASE_FILTER,training_ph)
+            scope.reuse_variables()
+            fake_A = discriminator(predicted_A,N_BASE_FILTER,training_ph)
+
+        with tf.variable_scope("B_to_A") as scope:
+            scope.reuse_variables()
+            reconstructA = generator(predicted_B,N_BASE_FILTER,training_ph,
+                                           output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                           n_residuals=N_RESIDUAL_BLOCKS)
+
+        with tf.variable_scope("A_to_B") as scope:
+            scope.reuse_variables()
+            reconstructB = generator(predicted_A,N_BASE_FILTER,training_ph,
+                                          output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                          n_residuals=N_RESIDUAL_BLOCKS)
 
     """
     beginning of loss
@@ -139,9 +175,14 @@ def main(parser):
         solver = tf.no_op(name='optimisers')
 
     # tensorboard summary
-    variables = [genA_loss,discrimB_loss,genB_loss,discrimA_loss,cycle_loss,
+    if USE_3D:
+        variables = [genA_loss,discrimB_loss,genB_loss,discrimA_loss,cycle_loss,
             x_phA[:,40,:],x_phB[:,40,:],predicted_B[:,40,:],predicted_A[:,40,:],reconstructA[:,40,:],
              reconstructB[:,40,:]]
+    else:
+        variables = [genA_loss,discrimB_loss,genB_loss,discrimA_loss,cycle_loss,
+            x_phA,x_phB,predicted_B,predicted_A,reconstructA,reconstructB]
+
     types = ['scalar']*5+['image']*6
     names = ['loss/genA_loss','loss/discrimB_loss','loss/genB_loss','loss/discrimA_loss',
             'loss/cycle_loss','image/x_phA','image/x_phB','image/fake_B','image/fake_A',
@@ -160,8 +201,8 @@ def main(parser):
 
     """Training data"""
     ## get the control of WMH
-    wmh_control = tfrec.get_files_in_dir([os.path.join(DATA_DIR,"mri/WMH/CON/")],".tfrecords")
-    bmc_control = tfrec.get_files_in_dir([os.path.join(DATA_DIR,"mri/BMC/CON/")],".tfrecords")
+    wmh_control = tfrec.get_files_in_dir([os.path.join(DATA_DIR,"WMH/CON/")],".tfrecords")
+    bmc_control = tfrec.get_files_in_dir([os.path.join(DATA_DIR,"BMC/CON/")],".tfrecords")
     print(wmh_control)
     #feature_list =  ['data','scanner','gender','class','age','x_shape','y_shape','z_shape']
     #data_list = ['float','int','int','int','int','int','int','int']
@@ -253,5 +294,9 @@ if __name__ == '__main__':
     parser.add_argument("--batch_size", type=int, default=1, help='batch size per training step')
     parser.add_argument("--data_dir", default='data', help='root directory of data')
     parser.add_argument("--checkpoint_name", help='name of directory of checkpoint')
+    parser.add_argument("--n_filter", type=int, default=4, help='no of initial base filters')
+    parser.add_argument("--n_residuals_blocks", type=int, default=1, help='no of residual blocks in generator')
+    parser.add_argument('--use_3D', dest='use_3D', action='store_true')
+    parser.set_defaults(use_3D=False)
     args = parser.parse_args()
     main(args)
