@@ -33,7 +33,7 @@ def main(parser):
 
     # model paramters
     N_BASE_FILTER = parser.n_filter
-    N_RESIDUAL_BLOCKS = parser.n_residuals_blocks
+    N_RESIDUAL_BLOCKS = parser.n_residual_blocks
     PATCH_SIZE = 128
     N_MODALITY = 1
     BATCH_SIZE = parser.batch_size
@@ -226,7 +226,7 @@ def main(parser):
     # ability to save/load models
     saver = tf.train.Saver()
     base_dir = os.path.join(home,'tensorflow_checkpoints/cycle_mri/'+CHECKPOINT_NAME+'_filter'
-                            +str(N_BASE_FILTER))
+                            +str(N_BASE_FILTER)+'_residual_block'+str(N_RESIDUAL_BLOCKS))
 
 
     checkpoint_dir = os.path.join(base_dir ,'train')
@@ -295,7 +295,7 @@ if __name__ == '__main__':
     parser.add_argument("--data_dir", default='data', help='root directory of data')
     parser.add_argument("--checkpoint_name", help='name of directory of checkpoint')
     parser.add_argument("--n_filter", type=int, default=4, help='no of initial base filters')
-    parser.add_argument("--n_residuals_blocks", type=int, default=1, help='no of residual blocks in generator')
+    parser.add_argument("--n_residuals_block", type=int, default=1, help='no of residual blocks in generator')
     parser.add_argument('--use_3D', dest='use_3D', action='store_true')
     parser.set_defaults(use_3D=False)
     args = parser.parse_args()
