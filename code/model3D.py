@@ -119,3 +119,42 @@ def generator3D_unet(x,base_filter,training_ph,output_activation, depth=3):
         output = layers.conv_3Dlayer(current_output,1,1,1,
                         output_activation, training_ph,None)
     return output
+
+def cycle_gan3D(PATCH_SIZE,N_MODALITY,N_BASE_FILTER,N_RESIDUAL_BLOCKS,training_ph):
+    x_phA = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
+    x_phB = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
+
+    with tf.variable_scope("A_to_B") as scope:
+        predicted_B = generator3D(x_phA,N_BASE_FILTER,training_ph,
+                                  output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                  n_residuals=N_RESIDUAL_BLOCKS)
+
+
+    with tf.variable_scope("discrimB") as scope:
+        real_B = discriminator3D(x_phB,N_BASE_FILTER,training_ph)
+        scope.reuse_variables()
+        fake_B = discriminator3D(predicted_B,N_BASE_FILTER,training_ph)
+
+    with tf.variable_scope("B_to_A") as scope:
+        predicted_A = generator3D(x_phB,N_BASE_FILTER,training_ph,
+                                      output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                      n_residuals=N_RESIDUAL_BLOCKS)
+
+    with tf.variable_scope("discrimA") as scope:
+        real_A = discriminator3D(x_phA,N_BASE_FILTER,training_ph)
+        scope.reuse_variables()
+        fake_A = discriminator3D(predicted_A,N_BASE_FILTER,training_ph)
+
+    with tf.variable_scope("B_to_A") as scope:
+        scope.reuse_variables()
+        reconstructA = generator3D(predicted_B,N_BASE_FILTER,training_ph,
+                                       output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                       n_residuals=N_RESIDUAL_BLOCKS)
+
+    with tf.variable_scope("A_to_B") as scope:
+        scope.reuse_variables()
+        reconstructB = generator3D(predicted_A,N_BASE_FILTER,training_ph,
+                                      output_activation=tf.nn.relu,n_modality=N_MODALITY,
+                                      n_residuals=N_RESIDUAL_BLOCKS)
+    return (x_phA, x_phB, predicted_A,predicted_B,
+            real_A,real_B,fake_A,fake_B,reconstructA,reconstructB)

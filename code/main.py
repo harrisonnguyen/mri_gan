@@ -11,73 +11,55 @@ import os
 import pickle
 
 # custom tensorflow functions
-from model import generator, discriminator
+from model import cycle_gan
 from model_utils import learning_utils as learning
 from model_utils import tfrecord_utils as tfrec
 
 import argparse
 
+#3d model
+from model3D import cycle_gan3D
 
-def load_data(serialized_example,feature_list, data_list,feature_size):
-    data = tfrec.tfrecord_parser(serialized_example,feature_list,data_list,feature_size**2)
-    #image = tf.reshape(data[0], [feature_size,feature_size,feature_size])
+def load_data(serialized_example,feature_list, data_list,feature_size,use_3D):
+    if use_3D:
+        data = tfrec.tfrecord_parser(serialized_example,feature_list,data_list,feature_size**3)
+        #image = tf.reshape(data[0], [feature_size,feature_size,feature_size])
 
-    # get a random slice of the 3d image
-    #index = tf.random_uniform((),minval=0,maxval=data[5],dtype=tf.int64)
-    #slice = image[index,:,:]
-    return tf.reshape(data[0],[feature_size,feature_size,1])
+        # get a random slice of the 3d image
+        #index = tf.random_uniform((),minval=0,maxval=data[5],dtype=tf.int64)
+        #slice = image[index,:,:]
+        return tf.reshape(data[0],[feature_size,feature_size,feature_size,1])
+    else:
+        data = tfrec.tfrecord_parser(serialized_example,feature_list,data_list,feature_size**2)
+        #image = tf.reshape(data[0], [feature_size,feature_size,feature_size])
+
+        # get a random slice of the 3d image
+        #index = tf.random_uniform((),minval=0,maxval=data[5],dtype=tf.int64)
+        #slice = image[index,:,:]
+        return tf.reshape(data[0],[feature_size,feature_size,1])
 
 def main(parser):
 
     # model paramters
-    N_BASE_FILTER = 16
+    N_BASE_FILTER = parser.n_filter
+    N_RESIDUAL_BLOCKS = parser.n_residual_blocks
     PATCH_SIZE = 128
     N_MODALITY = 1
     BATCH_SIZE = parser.batch_size
     N_EPOCHS = parser.n_epoch
-
-    x_phA = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
-    x_phB = tf.placeholder(tf.float32, [None,PATCH_SIZE,PATCH_SIZE,N_MODALITY])
-
-
+    CHECKPOINT_NAME = parser.checkpoint_name
+    DATA_DIR = parser.data_dir
+    USE_3D = parser.use_3D
 
     training_ph = tf.placeholder_with_default(False,())
     learning_rate_ph = tf.placeholder_with_default(2e-4,())
     decay_step_ph = tf.placeholder(tf.int32,())
-
-    with tf.variable_scope("A_to_B") as scope:
-        predicted_B = generator(x_phA,N_BASE_FILTER,training_ph,
-                                  output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                  n_residuals=1)
-
-
-    with tf.variable_scope("discrimB") as scope:
-        real_B = discriminator(x_phB,N_BASE_FILTER,training_ph)
-        scope.reuse_variables()
-        fake_B = discriminator(predicted_B,N_BASE_FILTER,training_ph)
-
-    with tf.variable_scope("B_to_A") as scope:
-        predicted_A = generator(x_phB,N_BASE_FILTER,training_ph,
-                                      output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                      n_residuals=1)
-
-    with tf.variable_scope("discrimA") as scope:
-        real_A = discriminator(x_phA,N_BASE_FILTER,training_ph)
-        scope.reuse_variables()
-        fake_A = discriminator(predicted_A,N_BASE_FILTER,training_ph)
-
-    with tf.variable_scope("B_to_A") as scope:
-        scope.reuse_variables()
-        reconstructA = generator(predicted_B,N_BASE_FILTER,training_ph,
-                                       output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                       n_residuals=1)
-
-    with tf.variable_scope("A_to_B") as scope:
-        scope.reuse_variables()
-        reconstructB = generator(predicted_A,N_BASE_FILTER,training_ph,
-                                      output_activation=tf.nn.relu,n_modality=N_MODALITY,
-                                      n_residuals=1)
-
+    if USE_3D:
+        (x_phA, x_phB, predicted_A,predicted_B,
+        real_A,real_B,fake_A,fake_B,reconstructA,reconstructB) = cycle_gan3D(PATCH_SIZE,N_MODALITY,N_BASE_FILTER,N_RESIDUAL_BLOCKS,training_ph)
+    else:
+        (x_phA, x_phB, predicted_A,predicted_B,
+        real_A,real_B,fake_A,fake_B,reconstructA,reconstructB) = cycle_gan(PATCH_SIZE,N_MODALITY,N_BASE_FILTER,N_RESIDUAL_BLOCKS,training_ph)
     """
     beginning of loss
     """
@@ -135,9 +117,14 @@ def main(parser):
         solver = tf.no_op(name='optimisers')
 
     # tensorboard summary
-    variables = [genA_loss,discrimB_loss,genB_loss,discrimA_loss,cycle_loss,
-            x_phA,x_phB,predicted_B,predicted_A,reconstructA,
-             reconstructB]
+    if USE_3D:
+        variables = [genA_loss,discrimB_loss,genB_loss,discrimA_loss,cycle_loss,
+            x_phA[:,40,:],x_phB[:,40,:],predicted_B[:,40,:],predicted_A[:,40,:],reconstructA[:,40,:],
+             reconstructB[:,40,:]]
+    else:
+        variables = [genA_loss,discrimB_loss,genB_loss,discrimA_loss,cycle_loss,
+            x_phA,x_phB,predicted_B,predicted_A,reconstructA,reconstructB]
+
     types = ['scalar']*5+['image']*6
     names = ['loss/genA_loss','loss/discrimB_loss','loss/genB_loss','loss/discrimA_loss',
             'loss/cycle_loss','image/x_phA','image/x_phB','image/fake_B','image/fake_A',
@@ -153,15 +140,12 @@ def main(parser):
                                        collections=['validation'])
     validation_summary = tf.summary.merge_all(key='validation')
 
-    ## sorting out data
-    N_EPOCHS = parser.n_epoch
-    BATCH_SIZE = parser.batch_size
 
     """Training data"""
     ## get the control of WMH
-    wmh_control = tfrec.get_files_in_dir(["data/mri_saggital/WMH/CON/"],".tfrecords")
-    bmc_control = tfrec.get_files_in_dir(["data/mri_saggital/BMC/CON/"],".tfrecords")
-
+    wmh_control = tfrec.get_files_in_dir([os.path.join(DATA_DIR,"WMH/CON/")],".tfrecords")
+    bmc_control = tfrec.get_files_in_dir([os.path.join(DATA_DIR,"BMC/CON/")],".tfrecords")
+    print(wmh_control)
     #feature_list =  ['data','scanner','gender','class','age','x_shape','y_shape','z_shape']
     #data_list = ['float','int','int','int','int','int','int','int']
     feature_list =  ['data','x_shape','y_shape','z_shape']
@@ -169,7 +153,7 @@ def main(parser):
     feature_size = PATCH_SIZE
 
     ## create the tensorflow queue
-    parse_fn = lambda x: load_data(x,feature_list,data_list,feature_size)
+    parse_fn = lambda x: load_data(x,feature_list,data_list,feature_size,USE_3D)
     (A_iterator,A_interator_next,filename_ph,batch_ph) = tfrec.create_tfrecord_queue(parse_fn,n_epochs=N_EPOCHS)
 
     (B_iterator,B_interator_next,filename_ph,batch_ph) = tfrec.create_tfrecord_queue(parse_fn,None,
@@ -183,8 +167,8 @@ def main(parser):
 
     # ability to save/load models
     saver = tf.train.Saver()
-    base_dir = os.path.join(home,'tensorflow_checkpoints/cycle_mri/relu_output_'+'filter'
-                            +str(N_BASE_FILTER))
+    base_dir = os.path.join(home,'tensorflow_checkpoints/cycle_mri/'+CHECKPOINT_NAME+'_filter'
+                            +str(N_BASE_FILTER)+'_residual_block'+str(N_RESIDUAL_BLOCKS))
 
 
     checkpoint_dir = os.path.join(base_dir ,'train')
@@ -250,5 +234,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='cycle gan for mri volumes')
     parser.add_argument("--n_epoch", type=int, default=10, help='int number of epochs to train')
     parser.add_argument("--batch_size", type=int, default=1, help='batch size per training step')
+    parser.add_argument("--data_dir", default='data/mri_saggital', help='root directory of data')
+    parser.add_argument("--checkpoint_name", help='name of directory of checkpoint')
+    parser.add_argument("--n_filter", type=int, default=4, help='no of initial base filters')
+    parser.add_argument("--n_residual_blocks", type=int, default=1, help='no of residual blocks in generator')
+    parser.add_argument('--use_3D', dest='use_3D', action='store_true')
+    parser.set_defaults(use_3D=False)
     args = parser.parse_args()
     main(args)
