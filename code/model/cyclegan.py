@@ -1,7 +1,6 @@
 from __future__ import print_function, division
-import scipy
 
-from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate,LeakyReLU,UpSampling3D, Conv3D
+from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate,LeakyReLU,UpSampling3D, Conv3D, Conv2D, UpSampling2D
 from tensorflow.keras.layers import BatchNormalization, Activation, ZeroPadding2D
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.optimizers import Adam
@@ -15,32 +14,34 @@ import sys
 import numpy as np
 import os
 
-class CycleGAN():
-    def __init__(self,image_shape,depth=3):
-        # Input shape
-        #self.img_rows = 128
-        #self.img_cols = 128
-        #self.channels = 1
+class CycleGAN(object):
+    def __init__(self,image_shape,
+                gf=32,
+                df=64,
+                depth=3,
+                lambda_cycle=10.0,
+                lambda_id=1.0):
         self.img_shape = image_shape
-
+        self.channels = image_shape[-1]
 
         # Calculate output shape of D (PatchGAN)
-        #patch = int(self.img_shape[1] / 2**4)
-        #self.disc_patch = (patch, patch, 1)
-        self.disc_patch =(8,10,8,1)
+        patch = int(self.img_shape[1] / 2**4)
+        self.disc_patch = (patch, patch, 1)
+        #self.disc_patch =(8,10,8,1)
         # Number of filters in the first layer of G and D
-        self.gf = 32
-        self.df = 64
+        self.gf = gf
+        self.df = df
 
         # Loss weights
-        self.lambda_cycle = 10.0                    # Cycle-consistency loss
-        self.lambda_id = 0.1 * self.lambda_cycle    # Identity loss
+        self.lambda_cycle = lambda_cycle                    # Cycle-consistency loss
+        self.lambda_id = lambda_id    # Identity loss
 
         optimizer = Adam(0.0002, 0.5)
 
         # Build and compile the discriminators
-        self.d_A = self.build_discriminator()
-        self.d_B = self.build_discriminator()
+        self.d_A = self.build_discriminator(depth)
+        self.d_B = self.build_discriminator(depth)
+        print(self.d_A.summary())
         self.d_A.compile(loss='mse',
             optimizer=optimizer,
             metrics=['accuracy'])
@@ -56,6 +57,7 @@ class CycleGAN():
         # Build the generators
         self.g_AB = self.build_generator(depth)
         self.g_BA = self.build_generator(depth)
+        print(self.g_AB.summary())
 
         # Input images from both domains
         img_A = Input(shape=self.img_shape)
@@ -91,64 +93,8 @@ class CycleGAN():
                                             self.lambda_cycle, self.lambda_cycle,
                                             self.lambda_id, self.lambda_id ],
                             optimizer=optimizer)
-        """
-        tensorboard = callbacks.TensorBoard(
-                      log_dir='/tmp/my_tf_logs',
-                      histogram_freq=0,
-                      batch_size=batch_size,
-                      write_graph=False,
-                      write_grads=False
-                    )
-        modelcheckpoint = callbacks.ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only=False, save_weights_only=False, mode='auto', period=1)
-        csv_logger = callbacks.CSVLogger(filename, separator=',', append=False)
-
-        tensorboard.set_model(model)
-
-        # Transform train_on_batch return value
-        # to dict expected by on_batch_end callback
-        def named_logs(model, logs):
-            result = {}
-            for l in zip(model.metrics_names, logs):
-                result[l[0]] = l[1]
-            return result
-        tensorboard.on_epoch_end(batch_id, named_logs(model, logs))
-        """
-    def build_generator(self,depth):
-        """U-Net Generator"""
-
-        model = unet_model_3d(self.img_shape,
-                                pool_size=(2, 2, 2),
-                                depth=depth,
-                                n_base_filters=self.gf,
-                                activation_name="tanh")
-
-        return model
-
-    def build_discriminator(self):
-
-        def d_layer(layer_input, filters, f_size=4, normalization=True):
-            """Discriminator layer"""
-            d = Conv3D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
-            d = LeakyReLU(alpha=0.2)(d)
-            if normalization:
-                d = InstanceNormalization()(d)
-            return d
-
-        img = Input(shape=self.img_shape)
-
-        d1 = d_layer(img, self.df, normalization=False)
-        d2 = d_layer(d1, self.df*2)
-        d3 = d_layer(d2, self.df*4)
-        d4 = d_layer(d3, self.df*8)
-
-        validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(d4)
-
-        return Model(img, validity)
 
     def train_step(self, imgs_A,imgs_B):
-
-        start_time = datetime.datetime.now()
-
         # Adversarial loss ground truths
         valid = np.ones((imgs_A.shape[0],) + self.disc_patch)
         fake = np.zeros((imgs_A.shape[0],) + self.disc_patch)
@@ -182,8 +128,140 @@ class CycleGAN():
                                                 [valid, valid,
                                                 imgs_A, imgs_B,
                                                 imgs_A, imgs_B])
+        return g_loss,d_loss
 
-        elapsed_time = datetime.datetime.now() - start_time
+
+    def build_generator(self,depth):
+        """U-Net Generator"""
+        def conv2d(layer_input, filters, f_size=4):
+            """Layers used during downsampling"""
+            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
+            d = LeakyReLU(alpha=0.2)(d)
+            d = InstanceNormalization()(d)
+            return d
+
+        def deconv2d(layer_input, skip_input, filters, f_size=4, dropout_rate=0):
+            """Layers used during upsampling"""
+            u = UpSampling2D(size=2)(layer_input)
+            u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
+            if dropout_rate:
+                u = Dropout(dropout_rate)(u)
+            u = InstanceNormalization()(u)
+            u = Concatenate()([u, skip_input])
+            return u
+
+        # Image input
+        d0 = Input(shape=self.img_shape)
+        input = d0
+        layers = []
+        # Downsampling
+
+        for i in range(depth):
+            output = conv2d(input,self.gf*(2**i))
+            layers.append(output)
+            input = output
+        #d1 = conv2d(d0, self.gf)
+        #d2 = conv2d(d1, self.gf*2)
+        #d3 = conv2d(d2, self.gf*4)
+        #d4 = conv2d(d3, self.gf*8)
+        for i in range(depth-2, -1, -1):
+            output = deconv2d(input,layer[i],self.gf*2**i)
+            input = output
+
+
+        # Upsampling
+        #u1 = deconv2d(d4, d3, self.gf*4)
+        #u2 = deconv2d(u1, d2, self.gf*2)
+        #u3 = deconv2d(u2, d1, self.gf)
+
+        u4 = UpSampling2D(size=2)(input)
+        output_img = Conv2D(self.channels, kernel_size=4, strides=1, padding='same', activation='sigmoid')(u4)
+
+        return Model(d0, output_img)
+
+    def build_discriminator(self,depth):
+
+        def d_layer(layer_input, filters, f_size=4, normalization=True):
+            """Discriminator layer"""
+            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
+            d = LeakyReLU(alpha=0.2)(d)
+            if normalization:
+                d = InstanceNormalization()(d)
+            return d
+
+        img = Input(shape=self.img_shape)
+
+        d1 = d_layer(img, self.df, normalization=False)
+        input = d1
+        for i in range(1,depth):
+            output = d_layer(input, self.df*2**i)
+            input = output
+
+        validity = Conv2D(1, kernel_size=4, strides=1, padding='same')(input)
+
+        return Model(img, validity)
+
+class CycleGAN3D(CycleGAN):
+    def __init__(self,*args,**kwargs):
+        # Input shape
+        super(CycleGAN3D,self).__init__(*args,**kwargs)
+        """
+        tensorboard = callbacks.TensorBoard(
+                      log_dir='/tmp/my_tf_logs',
+                      histogram_freq=0,
+                      batch_size=batch_size,
+                      write_graph=False,
+                      write_grads=False
+                    )
+        modelcheckpoint = callbacks.ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only=False, save_weights_only=False, mode='auto', period=1)
+        csv_logger = callbacks.CSVLogger(filename, separator=',', append=False)
+
+        tensorboard.set_model(model)
+
+        # Transform train_on_batch return value
+        # to dict expected by on_batch_end callback
+        def named_logs(model, logs):
+            result = {}
+            for l in zip(model.metrics_names, logs):
+                result[l[0]] = l[1]
+            return result
+        tensorboard.on_epoch_end(batch_id, named_logs(model, logs))
+        """
+    def build_generator(self,depth):
+        """U-Net Generator"""
+
+        model = unet_model_3d(self.img_shape,
+                                pool_size=(2, 2, 2),
+                                depth=depth,
+                                n_base_filters=self.gf,
+                                activation_name="sigmoid")
+
+        return model
+
+    def build_discriminator(self,depth):
+
+        def d_layer(layer_input, filters, f_size=4, normalization=True):
+            """Discriminator layer"""
+            d = Conv3D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
+            d = LeakyReLU(alpha=0.2)(d)
+            if normalization:
+                d = InstanceNormalization()(d)
+            return d
+
+        img = Input(shape=self.img_shape)
+
+        d1 = d_layer(img, self.df, normalization=False)
+        input = d1
+        for i in range(1,depth):
+            output = d_layer(input, self.df*2**i)
+            input = output
+
+        validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(input)
+
+        return Model(img, validity)
+
+    def train_step(self, *args,**kwargs):
+        return super().train_step(*args,**kwargs)
         """
                 # Plot the progress
                 print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %05f, adv: %05f, recon: %05f, id: %05f] time: %s " \
@@ -237,5 +315,5 @@ class CycleGAN():
 
 
 if __name__ == '__main__':
-    gan = CycleGAN()
-    gan.train(epochs=200, batch_size=1, sample_interval=200)
+    gan = CycleGAN([64,64,64,1],2)
+    gan = CycleGAN3D([64,64,64,1],2)

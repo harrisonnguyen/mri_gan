@@ -26,7 +26,7 @@ def write_example(image,directory,file_name):
             type=click.Path(
                     file_okay=False,
                     dir_okay=True,
-                    writable=True),
+                    writable=False),
              help="directory to save results",
              show_default=True)
 
