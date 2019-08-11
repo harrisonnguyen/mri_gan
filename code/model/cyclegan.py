@@ -1,10 +1,11 @@
 from __future__ import print_function, division
 
-from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate,LeakyReLU,UpSampling3D, Conv3D, Conv2D, UpSampling2D
+from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate,LeakyReLU,UpSampling3D, Conv3D, Conv2D, UpSampling2D,Lambda
 from tensorflow.keras.layers import BatchNormalization, Activation, ZeroPadding2D
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import callbacks
+
 
 from model.unet import unet_model_3d
 from utils.instance_norm import InstanceNormalization
@@ -14,18 +15,25 @@ import sys
 import numpy as np
 import os
 
+def name_change_layer(tensor,name):
+    name_layer = Lambda(lambda x: x, name=name)
+    layer = name_layer(tensor)
+    return layer
+
 class CycleGAN(object):
     def __init__(self,image_shape,
                 gf=32,
                 df=64,
                 depth=3,
                 lambda_cycle=10.0,
-                lambda_id=1.0):
+                lambda_id=1.0,
+                learning_rate=2e-4,
+                beta_1=0.5):
         self.img_shape = image_shape
         self.channels = image_shape[-1]
 
         # Calculate output shape of D (PatchGAN)
-        patch = int(self.img_shape[1] / 2**4)
+        patch = int(self.img_shape[1] / 2**depth)
         self.disc_patch = (patch, patch, 1)
         #self.disc_patch =(8,10,8,1)
         # Number of filters in the first layer of G and D
@@ -36,7 +44,7 @@ class CycleGAN(object):
         self.lambda_cycle = lambda_cycle                    # Cycle-consistency loss
         self.lambda_id = lambda_id    # Identity loss
 
-        optimizer = Adam(0.0002, 0.5)
+        optimizer = Adam(learning_rate, beta_1)
 
         # Build and compile the discriminators
         self.d_A = self.build_discriminator(depth)
@@ -48,7 +56,6 @@ class CycleGAN(object):
         self.d_B.compile(loss='mse',
             optimizer=optimizer,
             metrics=['accuracy'])
-
         #-------------------------
         # Construct Computational
         #   Graph of Generators
@@ -70,31 +77,61 @@ class CycleGAN(object):
         reconstr_A = self.g_BA(fake_B)
         reconstr_B = self.g_AB(fake_A)
         # Identity mapping of images
-        img_A_id = self.g_BA(img_A)
-        img_B_id = self.g_AB(img_B)
-
+        #img_A_id = self.g_BA(img_A)
+        #img_B_id = self.g_AB(img_B)
+        #img_A_id._name = 'img_A_id'
+        #img_B_id._name = 'img_B_id'
         # For the combined model we will only train the generators
         #self.d_A.trainable = False
         #self.d_B.trainable = False
 
         # Discriminators determines validity of translated images
+        self.d_A.trainable=False
+        self.d_B.trainable=False
         valid_A = self.d_A(fake_A)
         valid_B = self.d_B(fake_B)
 
+        outputs = [valid_A, valid_B,
+                  reconstr_A, reconstr_B,
+                  fake_A,fake_B]
+        new_outputs = []
+
+        output_names = ['valid_A','valid_B','reconstr_A','reconstr_B',
+                        'fake_A','fake_B']
+        for i in range(len(output_names)):
+            new_outputs.append(name_change_layer(outputs[i],output_names[i]))
+
+
         # Combined model trains generators to fool discriminators
         self.combined = Model(inputs=[img_A, img_B],
-                              outputs=[ valid_A, valid_B,
-                                        reconstr_A, reconstr_B,
-                                        img_A_id, img_B_id ])
-        self.combined.compile(loss=['mse', 'mse',
-                                    'mae', 'mae',
-                                    'mae', 'mae'],
-                            loss_weights=[  1, 1,
-                                            self.lambda_cycle, self.lambda_cycle,
-                                            self.lambda_id, self.lambda_id ],
+                              outputs=new_outputs)
+        loss = {
+            'valid_A':'mse',
+            'valid_B':'mse',
+            'reconstr_A':'mae',
+            'reconstr_B':'mae',
+        }
+        loss_weights = {
+            'valid_A':1.0,
+            'valid_B':1.0,
+            'reconstr_A':self.lambda_cycle,
+            'reconstr_B':self.lambda_cycle,
+        }
+        self.combined.compile(loss=loss,
+                            loss_weights=loss_weights,
                             optimizer=optimizer)
 
-    def train_step(self, imgs_A,imgs_B):
+
+        self.tensorboard = callbacks.TensorBoard(
+          log_dir='/tmp/my_tf_logs',
+          histogram_freq=0,
+          batch_size=10,
+          write_graph=False,
+          write_grads=False
+        )
+
+
+    def train_step(self, imgs_A,imgs_B,write_summary=False,batch_id=None):
         # Adversarial loss ground truths
         valid = np.ones((imgs_A.shape[0],) + self.disc_patch)
         fake = np.zeros((imgs_A.shape[0],) + self.disc_patch)
@@ -126,10 +163,20 @@ class CycleGAN(object):
         # Train the generators
         g_loss = self.combined.train_on_batch([imgs_A, imgs_B],
                                                 [valid, valid,
-                                                imgs_A, imgs_B,
                                                 imgs_A, imgs_B])
+        if write_summary:
+            self.write_tensorboard_summary(self.d_A,dA_loss,batch_id)
+            self.write_tensorboard_summary(self.combined,g_loss,batch_id)
         return g_loss,d_loss
 
+    def write_tensorboard_summary(self,model,logs,batch_id):
+        self.tensorboard.set_model(self.combined)
+        def named_logs(model, logs):
+            result = {}
+            for l in zip(model.metrics_names, logs):
+                result[l[0]] = l[1]
+            return result
+        self.tensorboard.on_epoch_end(batch_id, named_logs(model, logs))
 
     def build_generator(self,depth):
         """U-Net Generator"""
@@ -165,7 +212,7 @@ class CycleGAN(object):
         #d3 = conv2d(d2, self.gf*4)
         #d4 = conv2d(d3, self.gf*8)
         for i in range(depth-2, -1, -1):
-            output = deconv2d(input,layer[i],self.gf*2**i)
+            output = deconv2d(input,layers[i],self.gf*2**i)
             input = output
 
 

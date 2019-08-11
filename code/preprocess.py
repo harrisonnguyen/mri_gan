@@ -33,10 +33,10 @@ def write_example(image,directory,file_name):
 
 def main(data_dir):
     df = pd.read_csv("data/demographics.csv")
-    for ele in df["Filename"].values[:5]:
+    for ele in df["Filename"].values:
         epi_img = nib.load(os.path.join(data_dir,"mwc1"+ele))
         img_data = epi_img.get_fdata()
-        print(img_data.shape)
+        print(ele)
         epi_img.uncache()
         write_example(np.reshape(np.array(img_data),(-1)),'data/mri_full/',ele.split(".")[0])
 

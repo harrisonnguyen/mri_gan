@@ -1,2 +1,2 @@
 #! /bin/bash
-python main.py --setA WMH/CON --setB BMC/CON --data_dir ../data/rich_saggital  --n_epoch 50
+python code/main_test.py --checkpoint-dir /home/harrison/tensorflow_checkpoints/mri_gan_redo/new --batch-size 16
