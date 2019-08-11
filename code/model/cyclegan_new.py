@@ -35,7 +35,7 @@ class CycleGAN(object):
         self.sess.config = config
         self.sess.run(tf.global_variables_initializer())
 
-        self._saver = tf.train.Saver()
+        self._saver = tf.train.Saver(save_relative_paths=True)
         checkpoint_dir = os.path.join(base_dir,'train')
         self._train_writer = tf.summary.FileWriter(checkpoint_dir, self.sess.graph)
 
@@ -59,11 +59,17 @@ class CycleGAN(object):
         self.g_AB = self.build_generator(gf,depth)
         self.g_BA = self.build_generator(gf,depth)
 
+        # translate images to new domain
         self._predictedB = self.g_AB(self._xphA)
         self._predictedA = self.g_BA(self._xphB)
 
+        # translate to original domain
         self._reconstructA = self.g_BA(self._predictedB)
         self._reconstructB = self.g_AB(self._predictedA)
+
+        # identity mappigs
+        self._img_A_id = self.g_BA(self._xphA)
+        self._img_B_id = self.g_AB(self._xphB)
 
         self.d_A = self.build_discriminator(df,depth)
         self.d_B = self.build_discriminator(df,depth)
@@ -151,13 +157,23 @@ class CycleGAN(object):
 
 
 
-        self._genA_loss = (tf.losses.mean_squared_error(predictions=self._fakeA,
-                                    labels=tf.ones_like(self._fakeA))
-                     + self._LAMBDA*self._cycle_loss)
+        self._genA_loss = (tf.losses.mean_squared_error(
+                                predictions=self._fakeA,
+                                labels=tf.ones_like(self._fakeA))
+                     +      self._LAMBDA*self._cycle_loss
+                     +  0.1*self._LAMBDA*tf.losses.absolute_difference(
+                            predictions=self._img_A_id,
+                            labels=self._xphA)
+                     )
 
-        self._genB_loss = (tf.losses.mean_squared_error(predictions=self._fakeB,
-                                                     labels=tf.ones_like(self._fakeB))
-                      + self._LAMBDA*self._cycle_loss)
+        self._genB_loss = (tf.losses.mean_squared_error(
+                                predictions=self._fakeB,
+                                 labels=tf.ones_like(self._fakeB))
+                      + self._LAMBDA*self._cycle_loss
+                      +  0.1*self._LAMBDA*tf.losses.absolute_difference(
+                             predictions=self._img_B_id,
+                             labels=self._xphB)
+                      )
 
         self._reconstruction_loss = tf.losses.mean_squared_error(predictions=self._predictedB,
                                                 labels=self._xphB)

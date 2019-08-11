@@ -92,10 +92,10 @@ def main(checkpoint_dir,
     set_B = data[(data["Scanner"]=="NRA") & (data["Class"]=="CON")]
     print(set_A.head())
     print(set_B.head())
-    dataset_A = load_data(set_A["Filename"].values[0],
+    dataset_A = load_data(set_A["Filename"].values,
                         image_size=image_size,
                         is_3D=False)
-    dataset_B = load_data(set_B["Filename"].values[0],
+    dataset_B = load_data(set_B["Filename"].values,
                         image_size=image_size,
                         is_3D=False)
 
