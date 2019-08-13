@@ -1,366 +1,227 @@
 from __future__ import print_function, division
+import tensorflow as tf
 
-from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate,LeakyReLU,UpSampling3D, Conv3D, Conv2D, UpSampling2D,Lambda
-from tensorflow.keras.layers import BatchNormalization, Activation, ZeroPadding2D
-from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras import callbacks
+from keras import backend as K
+from model.network import generator,discriminator
 
-
-from model.unet import unet_model_3d
-from utils.instance_norm import InstanceNormalization
-import datetime
-import matplotlib.pyplot as plt
-import sys
-import numpy as np
+from model_utils import learning_utils as learning
 import os
-
-def name_change_layer(tensor,name):
-    name_layer = Lambda(lambda x: x, name=name)
-    layer = name_layer(tensor)
-    return layer
-
 class CycleGAN(object):
-    def __init__(self,image_shape,
+    def __init__(self,
+                base_dir,
                 gf=32,
                 df=64,
                 depth=3,
-                lambda_cycle=10.0,
-                lambda_id=1.0,
-                learning_rate=2e-4,
-                beta_1=0.5):
-        self.img_shape = image_shape
-        self.channels = image_shape[-1]
-
-        # Calculate output shape of D (PatchGAN)
-        patch = int(self.img_shape[1] / 2**depth)
-        self.disc_patch = (patch, patch, 1)
-        #self.disc_patch =(8,10,8,1)
-        # Number of filters in the first layer of G and D
-        self.gf = gf
-        self.df = df
-
-        # Loss weights
-        self.lambda_cycle = lambda_cycle                    # Cycle-consistency loss
-        self.lambda_id = lambda_id    # Identity loss
-
-        optimizer = Adam(learning_rate, beta_1)
-
-        # Build and compile the discriminators
-        self.d_A = self.build_discriminator(depth)
-        self.d_B = self.build_discriminator(depth)
-        print(self.d_A.summary())
-        self.d_A.compile(loss='mse',
-            optimizer=optimizer,
-            metrics=['accuracy'])
-        self.d_B.compile(loss='mse',
-            optimizer=optimizer,
-            metrics=['accuracy'])
-        #-------------------------
-        # Construct Computational
-        #   Graph of Generators
-        #-------------------------
-
-        # Build the generators
-        self.g_AB = self.build_generator(depth)
-        self.g_BA = self.build_generator(depth)
-        print(self.g_AB.summary())
-
-        # Input images from both domains
-        img_A = Input(shape=self.img_shape)
-        img_B = Input(shape=self.img_shape)
-
-        # Translate images to the other domain
-        fake_B = self.g_AB(img_A)
-        fake_A = self.g_BA(img_B)
-        # Translate images back to original domain
-        reconstr_A = self.g_BA(fake_B)
-        reconstr_B = self.g_AB(fake_A)
-        # Identity mapping of images
-        #img_A_id = self.g_BA(img_A)
-        #img_B_id = self.g_AB(img_B)
-        #img_A_id._name = 'img_A_id'
-        #img_B_id._name = 'img_B_id'
-        # For the combined model we will only train the generators
-        #self.d_A.trainable = False
-        #self.d_B.trainable = False
-
-        # Discriminators determines validity of translated images
-        self.d_A.trainable=False
-        self.d_B.trainable=False
-        valid_A = self.d_A(fake_A)
-        valid_B = self.d_B(fake_B)
-
-        outputs = [valid_A, valid_B,
-                  reconstr_A, reconstr_B,
-                  fake_A,fake_B]
-        new_outputs = []
-
-        output_names = ['valid_A','valid_B','reconstr_A','reconstr_B',
-                        'fake_A','fake_B']
-        for i in range(len(output_names)):
-            new_outputs.append(name_change_layer(outputs[i],output_names[i]))
+                patch_size=128,
+                n_modality=1,
+                cycle_loss_weight=10.0,
+                initial_learning_rate=2e-4):
+        self.img_shape = [patch_size,patch_size,n_modality]
+        self._LAMBDA = cycle_loss_weight
+        self.initial_learning_rate = initial_learning_rate
+        tf.reset_default_graph()
+        self._build_graph(gf,df,depth,patch_size,n_modality)
+        self._create_loss()
+        self._create_summary()
+        self._create_optimiser()
 
 
-        # Combined model trains generators to fool discriminators
-        self.combined = Model(inputs=[img_A, img_B],
-                              outputs=new_outputs)
-        loss = {
-            'valid_A':'mse',
-            'valid_B':'mse',
-            'reconstr_A':'mae',
-            'reconstr_B':'mae',
-        }
-        loss_weights = {
-            'valid_A':1.0,
-            'valid_B':1.0,
-            'reconstr_A':self.lambda_cycle,
-            'reconstr_B':self.lambda_cycle,
-        }
-        self.combined.compile(loss=loss,
-                            loss_weights=loss_weights,
-                            optimizer=optimizer)
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth=True
+        self.sess = tf.keras.backend.get_session()
+        self.sess.config = config
+        self.sess.run(tf.global_variables_initializer())
+
+        self._saver = tf.train.Saver(save_relative_paths=True)
+        checkpoint_dir = os.path.join(base_dir,'train')
+        self._train_writer = tf.summary.FileWriter(checkpoint_dir, self.sess.graph)
+
+        checkpoint_dir = os.path.join(base_dir,'validation')
+        self._validation_writer = tf.summary.FileWriter(checkpoint_dir, self.sess.graph)
+
+        self.checkpoint_dir = os.path.join(base_dir,'checkpoint')
+
+    def _build_graph(self,gf,df,depth,patch_size,n_modality):
+        self._xphA = tf.placeholder(tf.float32,
+                                    [None,patch_size,patch_size,n_modality])
+        self._xphB = tf.placeholder(tf.float32,
+                                    [None,patch_size,patch_size,n_modality])
 
 
-        self.tensorboard = callbacks.TensorBoard(
-          log_dir='/tmp/my_tf_logs',
-          histogram_freq=0,
-          batch_size=10,
-          write_graph=False,
-          write_grads=False
-        )
+        self._batch_step = tf.Variable(0,trainable=False,dtype=tf.int32)
+        self._batch_step_inc = tf.assign_add(self._batch_step,1)
+        self._epoch = tf.Variable(0,trainable=False,dtype=tf.int32)
+        self._epoch_inc = tf.assign_add(self._epoch,1)
+
+        self.g_AB = generator(self.img_shape,gf,depth)
+        self.g_BA = generator(self.img_shape,gf,depth)
+
+        # translate images to new domain
+        self._predictedB = self.g_AB(self._xphA)
+        self._predictedA = self.g_BA(self._xphB)
+
+        # translate to original domain
+        self._reconstructA = self.g_BA(self._predictedB)
+        self._reconstructB = self.g_AB(self._predictedA)
+
+        # identity mappigs
+        self._img_A_id = self.g_BA(self._xphA)
+        self._img_B_id = self.g_AB(self._xphB)
+
+        self.d_A = discriminator(self.img_shape,df,depth)
+        self.d_B = discriminator(self.img_shape,df,depth)
+
+        self._realA = self.d_A(self._xphA)
+        self._fakeA = self.d_A(self._predictedA)
+        self._realB = self.d_B(self._xphB)
+        self._fakeB = self.d_B(self._predictedB)
+
+    def _create_loss(self):
+        self._discrimB_loss = (tf.losses.mean_squared_error(predictions=self._realB,
+                                      labels=tf.ones_like(self._realB))
+        + tf.losses.mean_squared_error(predictions=self._fakeB,
+                                    labels=tf.zeros_like(self._fakeB)))
+
+        self._discrimA_loss = (tf.losses.mean_squared_error(predictions=self._realA,
+                                      labels=tf.ones_like(self._realA))
+        + tf.losses.mean_squared_error(predictions=self._fakeA,
+                                    labels=tf.zeros_like(self._fakeA)))
+        self._reconstructA_loss = tf.losses.absolute_difference(self._xphA,self._reconstructA)
+
+        self._reconstructB_loss = tf.losses.absolute_difference(self._xphB,self._reconstructB)
+
+        self._cycle_loss = self._reconstructA_loss + self._reconstructB_loss
 
 
-    def train_step(self, imgs_A,imgs_B,write_summary=False,batch_id=None):
-        # Adversarial loss ground truths
-        valid = np.ones((imgs_A.shape[0],) + self.disc_patch)
-        fake = np.zeros((imgs_A.shape[0],) + self.disc_patch)
-        # ----------------------
-        #  Train Discriminators
-        # ----------------------
 
-        # Translate images to opposite domain
-        fake_B = self.g_AB.predict(imgs_A)
-        fake_A = self.g_BA.predict(imgs_B)
+        self._genA_loss = (tf.losses.mean_squared_error(
+                                predictions=self._fakeA,
+                                labels=tf.ones_like(self._fakeA))
+                     +      self._LAMBDA*self._cycle_loss
+                     +  0.1*self._LAMBDA*tf.losses.absolute_difference(
+                            predictions=self._img_A_id,
+                            labels=self._xphA)
+                     )
 
-        # Train the discriminators (original images = real / translated = Fake)
-        dA_loss_real = self.d_A.train_on_batch(imgs_A, valid)
-        dA_loss_fake = self.d_A.train_on_batch(fake_A, fake)
-        dA_loss = 0.5 * np.add(dA_loss_real, dA_loss_fake)
+        self._genB_loss = (tf.losses.mean_squared_error(
+                                predictions=self._fakeB,
+                                 labels=tf.ones_like(self._fakeB))
+                      + self._LAMBDA*self._cycle_loss
+                      +  0.1*self._LAMBDA*tf.losses.absolute_difference(
+                             predictions=self._img_B_id,
+                             labels=self._xphB)
+                      )
 
-        dB_loss_real = self.d_B.train_on_batch(imgs_B, valid)
-        dB_loss_fake = self.d_B.train_on_batch(fake_B, fake)
-        dB_loss = 0.5 * np.add(dB_loss_real, dB_loss_fake)
+        self._reconstruction_loss = tf.losses.mean_squared_error(predictions=self._predictedB,
+                                                labels=self._xphB)
 
-        # Total disciminator loss
-        d_loss = 0.5 * np.add(dA_loss, dB_loss)
+    def _create_optimiser(self):
+        genA_solver = tf.contrib.layers.optimize_loss(
+                                        self._genA_loss,
+                                        self._epoch,
+                                         self.initial_learning_rate,
+                                        'Adam',
+                                        variables=self.g_AB.trainable_weights,
+                                        increment_global_step=False,)
+        genB_solver= tf.contrib.layers.optimize_loss(self._genB_loss,
+                                            self._epoch,
+                                             self.initial_learning_rate,
+                                            'Adam',
+                                            variables=self.g_BA.trainable_weights,
+                                            increment_global_step=False,)
+        discrimA_solver= tf.contrib.layers.optimize_loss(self._discrimA_loss,
+                                                self._epoch,
+                                                 self.initial_learning_rate,
+                                                'Adam',
+                                                variables=self.d_A.trainable_weights,
+                                                increment_global_step=False,)
+        discrimB_solver = tf.contrib.layers.optimize_loss(self._discrimB_loss,
+                                                self._epoch,
+                                                 self.initial_learning_rate,
+                                                'Adam',
+                                                variables=self.d_B.trainable_weights,
+                                                increment_global_step=False,)
+        with tf.control_dependencies(
+            [discrimA_solver,discrimB_solver,
+            genA_solver,genB_solver]):
+            self._solver = tf.no_op(name='optimisers')
 
+    def _create_summary(self):
+        variables = [self._genA_loss,self._discrimB_loss,self._genB_loss,self._discrimA_loss,self._cycle_loss,
+                self._xphA,self._xphB,self._predictedB,self._predictedA,self._reconstructA,
+                 self._reconstructB]
+        types = ['scalar']*5+['image']*6
+        names = ['loss/genA_loss','loss/discrimB_loss','loss/genB_loss','loss/discrimA_loss',
+                'loss/cycle_loss','image/x_phA','image/x_phB','image/fake_B','image/fake_A',
+                'image/reconstructA','image/reconstructB']
+        self._summary_op,self._weights_op = learning.create_summary(variables,types,names)
 
-        # ------------------
-        #  Train Generators
-        # ------------------
+        tf.summary.scalar('validation/accuracy', self._reconstruction_loss,
+                                           collections=['validation'])
+        tf.summary.image('validation/real_B', self._xphB,
+                                           collections=['validation'])
+        tf.summary.image('validation/fake_B', self._predictedB,
+                                           collections=['validation'])
+        self._validation_summary = tf.summary.merge_all(key='validation')
 
-        # Train the generators
-        g_loss = self.combined.train_on_batch([imgs_A, imgs_B],
-                                                [valid, valid,
-                                                imgs_A, imgs_B])
+    def train_step(self,A,B,
+                        write_summary=False):
+        data={self._xphA: A,
+              self._xphB: B,
+              K.learning_phase():True}
+        summary,global_step,_,_ =self.sess.run([self._summary_op,
+                                            self._batch_step,
+                                            self._solver,
+                                            self._batch_step_inc,],
+                                            feed_dict=data)
         if write_summary:
-            self.write_tensorboard_summary(self.d_A,dA_loss,batch_id)
-            self.write_tensorboard_summary(self.combined,g_loss,batch_id)
-        return g_loss,d_loss
+            self._train_writer.add_summary(summary, global_step)
+        return global_step
 
-    def write_tensorboard_summary(self,model,logs,batch_id):
-        self.tensorboard.set_model(self.combined)
-        def named_logs(model, logs):
-            result = {}
-            for l in zip(model.metrics_names, logs):
-                result[l[0]] = l[1]
-            return result
-        self.tensorboard.on_epoch_end(batch_id, named_logs(model, logs))
+    def validate(self,A,B):
+        data={self._xphA: A,
+              self._xphB: B,
+              K.learning_phase():False}
 
-    def build_generator(self,depth):
-        """U-Net Generator"""
-        def conv2d(layer_input, filters, f_size=4):
-            """Layers used during downsampling"""
-            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
-            d = LeakyReLU(alpha=0.2)(d)
-            d = InstanceNormalization()(d)
-            return d
+        summary,global_step = self.sess.run([self._validation_summary,
+                                        self._batch_step],
+                                            feed_dict=data)
+        self._validation_writer.add_summary(summary, global_step)
 
-        def deconv2d(layer_input, skip_input, filters, f_size=4, dropout_rate=0):
-            """Layers used during upsampling"""
-            u = UpSampling2D(size=2)(layer_input)
-            u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
-            if dropout_rate:
-                u = Dropout(dropout_rate)(u)
-            u = InstanceNormalization()(u)
-            u = Concatenate()([u, skip_input])
-            return u
+        return global_step
 
-        # Image input
-        d0 = Input(shape=self.img_shape)
-        input = d0
-        layers = []
-        # Downsampling
+    def save_checkpoint(self):
+        epoch = self.get_epoch()
+        self._saver.save(self.sess, os.path.join(self.checkpoint_dir,"epoch"+str(epoch)+".ckpt"))
+        return epoch
 
-        for i in range(depth):
-            output = conv2d(input,self.gf*(2**i))
-            layers.append(output)
-            input = output
-        #d1 = conv2d(d0, self.gf)
-        #d2 = conv2d(d1, self.gf*2)
-        #d3 = conv2d(d2, self.gf*4)
-        #d4 = conv2d(d3, self.gf*8)
-        for i in range(depth-2, -1, -1):
-            output = deconv2d(input,layers[i],self.gf*2**i)
-            input = output
+    def increment_epoch(self):
+        epoch = self.sess.run(self._epoch_inc)
+        return epoch
 
+    def get_epoch(self):
+        return self.sess.run(self._epoch)
 
-        # Upsampling
-        #u1 = deconv2d(d4, d3, self.gf*4)
-        #u2 = deconv2d(u1, d2, self.gf*2)
-        #u3 = deconv2d(u2, d1, self.gf)
+    def restore_latest_checkpoint(self):
+        self._saver.restore(self.sess,tf.train.latest_checkpoint(self.checkpoint_dir))
+        return self.sess.run(self._batch_step)
 
-        u4 = UpSampling2D(size=2)(input)
-        output_img = Conv2D(self.channels, kernel_size=4, strides=1, padding='same', activation='sigmoid')(u4)
-
-        return Model(d0, output_img)
-
-    def build_discriminator(self,depth):
-
-        def d_layer(layer_input, filters, f_size=4, normalization=True):
-            """Discriminator layer"""
-            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
-            d = LeakyReLU(alpha=0.2)(d)
-            if normalization:
-                d = InstanceNormalization()(d)
-            return d
-
-        img = Input(shape=self.img_shape)
-
-        d1 = d_layer(img, self.df, normalization=False)
-        input = d1
-        for i in range(1,depth):
-            output = d_layer(input, self.df*2**i)
-            input = output
-
-        validity = Conv2D(1, kernel_size=4, strides=1, padding='same')(input)
-
-        return Model(img, validity)
-
-class CycleGAN3D(CycleGAN):
-    def __init__(self,*args,**kwargs):
-        # Input shape
-        super(CycleGAN3D,self).__init__(*args,**kwargs)
+    def score(self,A,B):
         """
-        tensorboard = callbacks.TensorBoard(
-                      log_dir='/tmp/my_tf_logs',
-                      histogram_freq=0,
-                      batch_size=batch_size,
-                      write_graph=False,
-                      write_grads=False
-                    )
-        modelcheckpoint = callbacks.ModelCheckpoint(filepath, monitor='loss', verbose=0, save_best_only=False, save_weights_only=False, mode='auto', period=1)
-        csv_logger = callbacks.CSVLogger(filename, separator=',', append=False)
-
-        tensorboard.set_model(model)
-
-        # Transform train_on_batch return value
-        # to dict expected by on_batch_end callback
-        def named_logs(model, logs):
-            result = {}
-            for l in zip(model.metrics_names, logs):
-                result[l[0]] = l[1]
-            return result
-        tensorboard.on_epoch_end(batch_id, named_logs(model, logs))
+        The score will be determined how well A is transformed to B
         """
-    def build_generator(self,depth):
-        """U-Net Generator"""
-
-        model = unet_model_3d(self.img_shape,
-                                pool_size=(2, 2, 2),
-                                depth=depth,
-                                n_base_filters=self.gf,
-                                activation_name="sigmoid")
-
-        return model
-
-    def build_discriminator(self,depth):
-
-        def d_layer(layer_input, filters, f_size=4, normalization=True):
-            """Discriminator layer"""
-            d = Conv3D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
-            d = LeakyReLU(alpha=0.2)(d)
-            if normalization:
-                d = InstanceNormalization()(d)
-            return d
-
-        img = Input(shape=self.img_shape)
-
-        d1 = d_layer(img, self.df, normalization=False)
-        input = d1
-        for i in range(1,depth):
-            output = d_layer(input, self.df*2**i)
-            input = output
-
-        validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(input)
-
-        return Model(img, validity)
-
-    def train_step(self, *args,**kwargs):
-        return super().train_step(*args,**kwargs)
-        """
-                # Plot the progress
-                print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %05f, adv: %05f, recon: %05f, id: %05f] time: %s " \
-                % ( epoch, epochs,
-                    batch_i, self.data_loader.n_batches,
-                    d_loss[0], 100*d_loss[1],
-                    g_loss[0],
-                    np.mean(g_loss[1:3]),
-                    np.mean(g_loss[3:5]),
-                    np.mean(g_loss[5:6]),
-                    elapsed_time))
-
-                # If at save interval => save generated image samples
-                if batch_i % sample_interval == 0:
-                    self.sample_images(epoch, batch_i)
-        """
-    def sample_images(self, epoch, batch_i):
-        os.makedirs('images/%s' % self.dataset_name, exist_ok=True)
-        r, c = 2, 3
-
-        imgs_A = self.data_loader.load_data(domain="A", batch_size=1, is_testing=True)
-        imgs_B = self.data_loader.load_data(domain="B", batch_size=1, is_testing=True)
-
-        # Demo (for GIF)
-        #imgs_A = self.data_loader.load_img('datasets/apple2orange/testA/n07740461_1541.jpg')
-        #imgs_B = self.data_loader.load_img('datasets/apple2orange/testB/n07749192_4241.jpg')
-
-        # Translate images to the other domain
-        fake_B = self.g_AB.predict(imgs_A)
-        fake_A = self.g_BA.predict(imgs_B)
-        # Translate back to original domain
-        reconstr_A = self.g_BA.predict(fake_B)
-        reconstr_B = self.g_AB.predict(fake_A)
-
-        gen_imgs = np.concatenate([imgs_A, fake_B, reconstr_A, imgs_B, fake_A, reconstr_B])
-
-        # Rescale images 0 - 1
-        gen_imgs = 0.5 * gen_imgs + 0.5
-
-        titles = ['Original', 'Translated', 'Reconstructed']
-        fig, axs = plt.subplots(r, c)
-        cnt = 0
-        for i in range(r):
-            for j in range(c):
-                axs[i,j].imshow(gen_imgs[cnt])
-                axs[i, j].set_title(titles[j])
-                axs[i,j].axis('off')
-                cnt += 1
-        fig.savefig("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i))
-        plt.close()
-
-
-if __name__ == '__main__':
-    gan = CycleGAN([64,64,64,1],2)
-    gan = CycleGAN3D([64,64,64,1],2)
+        data={self._xphA: A,
+              self._xphB: B,
+              K.learning_phase():False}
+        return self.sess.run(self._reconstruction_loss,
+                        feed_dict=data)
+    def transform_to_A(self,B):
+        data={self._xphB: B,
+              K.learning_phase():False}
+        return self.sess.run(self._predictedA,
+                        feed_dict=data)
+    def transform_to_B(self,A):
+        data={self._xphA: A,
+              K.learning_phase():False}
+        return self.sess.run(self._predictedB,
+                        feed_dict=data)
