@@ -28,8 +28,10 @@ class CycleGAN(object):
 
         config = tf.ConfigProto()
         config.gpu_options.allow_growth=True
-        self.sess = tf.keras.backend.get_session()
-        self.sess.config = config
+        #self.sess = tf.keras.backend.get_session()
+        #self.sess.config = config
+        self.sess = tf.Session(config=config)
+        tf.keras.backend.set_session(self.sess)
         self.sess.run(tf.global_variables_initializer())
 
         self._saver = tf.train.Saver(save_relative_paths=True)
@@ -131,13 +133,13 @@ class CycleGAN(object):
                                             increment_global_step=False,)
         discrimA_solver= tf.contrib.layers.optimize_loss(self._discrimA_loss,
                                                 self._epoch,
-                                                 self.initial_learning_rate,
+                                                 self.initial_learning_rate/2.0,
                                                 'Adam',
                                                 variables=self.d_A.trainable_weights,
                                                 increment_global_step=False,)
         discrimB_solver = tf.contrib.layers.optimize_loss(self._discrimB_loss,
                                                 self._epoch,
-                                                 self.initial_learning_rate,
+                                                 self.initial_learning_rate/2.0,
                                                 'Adam',
                                                 variables=self.d_B.trainable_weights,
                                                 increment_global_step=False,)

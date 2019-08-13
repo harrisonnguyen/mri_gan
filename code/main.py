@@ -72,10 +72,15 @@ def index_gen(n_slices,batch_size):
             type=click.INT,
              help="enumber of epochs for training",
              show_default=True)
+@click.option('--summary-freq',
+            default=500,
+            type=click.INT,
+             help="enumber of epochs for training",
+             show_default=True)
 def main(checkpoint_dir,
         data_dir,
         gf,df,depth,patch_size,n_channels,
-        cycle_loss_weight,initial_learning_rate,batch_size,n_epochs):
+        cycle_loss_weight,initial_learning_rate,batch_size,n_epochs,summary_freq):
     data = pd.read_csv("data/demographics.csv")
     data["Filename"] = data["Filename"].str.replace('.nii',".tfrecords")
     data["Filename"] = data_dir + data["Filename"].astype(str)
@@ -117,7 +122,7 @@ def main(checkpoint_dir,
                 img_B = sess.run(next_B)
                 gen = index_gen(min(img_A.shape[0],img_B.shape[0]),batch_size)
                 for ele in gen:
-                    write_summary = i%500 == 0
+                    write_summary = i%summary_freq == 0
                     epoch = gan.train_step(img_A[ele],
                                             img_B[ele],
                                             write_summary=write_summary)

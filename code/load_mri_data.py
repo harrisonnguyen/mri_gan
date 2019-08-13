@@ -27,7 +27,7 @@ def extract_patches_inverse(y,image_size,*args,**kwargs):
     return tf.gradients(_y, _x, grad_ys=y)[0] / grad
 
 def augment(image,ksizes,strides,is_3D):
-    image = image['img']/tf.reduce_max(image['img'])
+    image = image['img']
     if is_3D:
         patches = extract_patch(image,
                                 ksizes=ksizes,
@@ -49,6 +49,8 @@ def augment(image,ksizes,strides,is_3D):
             )
         # remove any slices that contain 0
         image = remove_zeros(image)
+    image = image/tf.reduce_max(image)
+    image = 2.0*image-1.0
     return image
 
 def remove_zeros(x):

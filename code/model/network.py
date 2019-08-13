@@ -10,10 +10,11 @@ def conv2d(layer_input, filters, f_size=4):
     d = InstanceNormalization()(d)
     return d
 
-def deconv2d(layer_input, skip_input, filters, f_size=4, dropout_rate=0):
+def deconv2d(layer_input, skip_input, filters, f_size=4, dropout_rate=0,
+activation='relu'):
     """Layers used during upsampling"""
     u = UpSampling2D(size=2)(layer_input)
-    u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
+    u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation=activation)(u)
     if dropout_rate:
         u = Dropout(dropout_rate)(u)
     u = InstanceNormalization()(u)
@@ -32,11 +33,14 @@ def generator(input_img_shape,gf,depth):
         layers.append(output)
         input = output
     for i in range(depth-2, -1, -1):
-        output = deconv2d(input,layers[i],gf*2**i)
+        if i == 0:
+            output = deconv2d(input,layers[i],gf*2**i)
+        else:
+            output = deconv2d(input,layers[i],gf*2**i)
         input = output
 
     u4 = UpSampling2D(size=2)(input)
-    output_img = Conv2D(input_img_shape[-1], kernel_size=4, strides=1, padding='same', activation='sigmoid')(u4)
+    output_img = Conv2D(input_img_shape[-1], kernel_size=4, strides=1, padding='same', activation='tanh')(u4)
 
     return Model(d0, output_img)
 
