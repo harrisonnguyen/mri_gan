@@ -99,12 +99,18 @@ def main(checkpoint_dir,
     print(set_B.head())
     dataset_A = load_data(set_A["Filename"].values,
                         image_size=image_size,
-                        is_3D=False)
+                        is_3D=False,
+                        buffer_size=batch_size*3)
     dataset_B = load_data(set_B["Filename"].values,
                         image_size=image_size,
-                        is_3D=False)
+                        is_3D=False,
+                        buffer_size=batch_size*3)
 
     sess = gan.sess
+    iterator_A = tf.compat.v1.data.make_initializable_iterator(dataset_A)
+    iterator_B = tf.compat.v1.data.make_initializable_iterator(dataset_B)
+    next_A = iterator_A.get_next()
+    next_B = iterator_B.get_next()
     try:
         i = gan.restore_latest_checkpoint()
         print("Restoring at step {}".format(i))
@@ -112,10 +118,8 @@ def main(checkpoint_dir,
         i = 0
         print("Creating new model")
     for k in range(n_epochs):
-        iterator_A = tf.compat.v1.data.make_one_shot_iterator(dataset_A)
-        next_A = iterator_A.get_next()
-        iterator_B = tf.compat.v1.data.make_one_shot_iterator(dataset_B)
-        next_B = iterator_B.get_next()
+        sess.run(iterator_A.initializer)
+        sess.run(iterator_B.initializer)
         while True:
             try:
                 img_A = sess.run(next_A)
