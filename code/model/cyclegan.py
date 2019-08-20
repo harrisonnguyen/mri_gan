@@ -18,7 +18,7 @@ class CycleGAN(object):
                 cycle_loss_weight=10.0,
                 initial_learning_rate=2e-4,
                 begin_decay=100,
-                end_learning_rate=2e-5,
+                end_learning_rate=2e-6,
                 decay_steps=100):
         self.img_shape = [patch_size,patch_size,n_modality]
         self._LAMBDA = cycle_loss_weight
@@ -125,40 +125,48 @@ class CycleGAN(object):
                                                 labels=self._xphB)
 
     def _create_optimiser(self):
-        decay_fn = (lambda x,y:linear_decay(
+        gen_decay_fn = (lambda x,y:linear_decay(
                             x,y,
                             self.begin_decay,
                             decay_steps=self.decay_steps,
                             end_learning_rate=self.end_learning_rate))
+        d_decay_fn = (lambda x,y:linear_decay(
+                            x,y,
+                            self.begin_decay,
+                            decay_steps=self.decay_steps,
+                            end_learning_rate=self.end_learning_rate/2.0))
         genA_solver = tf.contrib.layers.optimize_loss(
-                                        self._genA_loss,
-                                        self._epoch,
-                                         self.initial_learning_rate,
-                                        'Adam',
-                                        learning_rate_decay_fn=decay_fn,
-                                        variables=self.g_AB.trainable_weights,
-                                        increment_global_step=False,)
-        genB_solver= tf.contrib.layers.optimize_loss(self._genB_loss,
-                                            self._epoch,
-                                             self.initial_learning_rate,
-                                            'Adam',
-                                            learning_rate_decay_fn=decay_fn,
-                                            variables=self.g_BA.trainable_weights,
-                                            increment_global_step=False,)
-        discrimA_solver= tf.contrib.layers.optimize_loss(self._discrimA_loss,
-                                                self._epoch,
-                                                 self.initial_learning_rate/2.0,
-                                                'Adam',
-                                                learning_rate_decay_fn=decay_fn,
-                                                variables=self.d_A.trainable_weights,
-                                                increment_global_step=False,)
-        discrimB_solver = tf.contrib.layers.optimize_loss(self._discrimB_loss,
-                                                self._epoch,
-                                                 self.initial_learning_rate/2.0,
-                                                'Adam',
-                                                learning_rate_decay_fn=decay_fn,
-                                                variables=self.d_B.trainable_weights,
-                                                increment_global_step=False,)
+                            self._genA_loss,
+                            self._epoch,
+                             self.initial_learning_rate,
+                            'Adam',
+                            learning_rate_decay_fn=gen_decay_fn,
+                            variables=self.g_AB.trainable_weights,
+                            increment_global_step=False,)
+        genB_solver= tf.contrib.layers.optimize_loss(
+                        self._genB_loss,
+                        self._epoch,
+                         self.initial_learning_rate,
+                        'Adam',
+                        learning_rate_decay_fn=gen_decay_fn,
+                        variables=self.g_BA.trainable_weights,
+                        increment_global_step=False,)
+        discrimA_solver= tf.contrib.layers.optimize_loss(
+                            self._discrimA_loss,
+                            self._epoch,
+                             self.initial_learning_rate/2.0,
+                            'Adam',
+                            learning_rate_decay_fn=d_decay_fn,
+                            variables=self.d_A.trainable_weights,
+                            increment_global_step=False,)
+        discrimB_solver = tf.contrib.layers.optimize_loss(
+                            self._discrimB_loss,
+                            self._epoch,
+                             self.initial_learning_rate/2.0,
+                            'Adam',
+                            learning_rate_decay_fn=d_decay_fn,
+                            variables=self.d_B.trainable_weights,
+                            increment_global_step=False,)
         with tf.control_dependencies(
             [discrimA_solver,discrimB_solver,
             genA_solver,genB_solver]):

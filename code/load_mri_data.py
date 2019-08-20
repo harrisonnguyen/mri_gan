@@ -35,11 +35,9 @@ def augment(image,ksizes,strides,is_3D):
         image = tf.reshape(patches,[-1,ksizes[1],ksizes[2],ksizes[3],1])
 
     else:
+        # we are getting 128x128 saggital slices
         paddings = tf.constant([[0,0,],[0,0,],[3,4],[0,0]])
         image = tf.pad(image,paddings,"CONSTANT")
-        # getting the saggital slices
-        #image = tf.transpose(image,[2,0,1,3])
-        # crop to 128/128
         image = tf.image.crop_to_bounding_box(
                 image,
                 offset_height=8,
@@ -49,6 +47,7 @@ def augment(image,ksizes,strides,is_3D):
             )
         # remove any slices that contain 0
         image = remove_zeros(image)
+    # normalise between -1 and 1
     image = image/tf.reduce_max(image)
     image = 2.0*image-1.0
     return image

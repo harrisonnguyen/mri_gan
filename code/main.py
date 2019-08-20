@@ -4,13 +4,22 @@ from model.cyclegan import CycleGAN
 from load_mri_data import load_data
 import click
 import numpy as np
+import csv
+import os
 def index_gen(n_slices,batch_size):
     index = np.array(range(n_slices))
     np.random.shuffle(index)
     for i in range(int(np.ceil(n_slices/batch_size))):
         items = index[i*batch_size:(i+1)*batch_size]
         yield items
-
+def write_params(params):
+    w = csv.writer(open(
+                    os.path.join(params["checkpoint_dir"],
+                                "config.csv"),
+                    "w+"))
+    for key, val in params.items():
+        w.writerow([key, val])
+    return
 @click.command()
 @click.option('--checkpoint-dir',
             type=click.Path(
@@ -57,7 +66,7 @@ def index_gen(n_slices,batch_size):
             type=click.FLOAT,
              help="Relative loss of cycle",
              show_default=True)
-@click.option('--initial-learning-rate',
+@click.option('--learning-rate',
             default=2e-4,
             type=click.FLOAT,
              help="Initial learning rate",
@@ -77,10 +86,26 @@ def index_gen(n_slices,batch_size):
             type=click.INT,
              help="enumber of epochs for training",
              show_default=True)
+@click.option('--end-learning-rate',
+            default=2e-6,
+            type=click.FLOAT,
+             help="ending learning rate to decay to",
+             show_default=True)
+@click.option('--begin-decay',
+            default=100,
+            type=click.INT,
+             help="epochs to begin decay",
+             show_default=True)
+@click.option('--decay-steps',
+            default=100,
+            type=click.INT,
+             help="number of epochs to decay learning rate",
+             show_default=True)
 def main(checkpoint_dir,
         data_dir,
         gf,df,depth,patch_size,n_channels,
-        cycle_loss_weight,initial_learning_rate,batch_size,n_epochs,summary_freq):
+        cycle_loss_weight,learning_rate,batch_size,n_epochs,summary_freq,end_learning_rate,begin_decay,decay_steps):
+
     data = pd.read_csv("data/demographics.csv")
     data["Filename"] = data["Filename"].str.replace('.nii',".tfrecords")
     data["Filename"] = data_dir + data["Filename"].astype(str)
@@ -92,11 +117,15 @@ def main(checkpoint_dir,
                     patch_size=patch_size,
                     n_modality=n_channels,
                     cycle_loss_weight=cycle_loss_weight,
-                    initial_learning_rate=initial_learning_rate)
+                    initial_learning_rate=learning_rate,
+                    begin_decay=begin_decay,
+                    end_learning_rate=end_learning_rate,
+                    decay_steps=decay_steps)
     set_A = data[(data["Scanner"]=="WMH") & (data["Class"]=="CON")]
     set_B = data[(data["Scanner"]=="NRA") & (data["Class"]=="CON")]
-    print(set_A.head())
-    print(set_B.head())
+    params = click.get_current_context().params
+    write_params(params)
+
     dataset_A = load_data(set_A["Filename"].values,
                         image_size=image_size,
                         is_3D=False,
